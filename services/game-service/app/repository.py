@@ -1,25 +1,35 @@
 from sqlalchemy.orm import Session
-from app.models import User
-from app.schemas import UserCreate
+from app.models import Game
+from app.schemas import GameCreate
 
 
-def create_user(db: Session, data: UserCreate, hashed_password: str) -> User:
-    user = User(
-        username=data.username,
-        email=data.email,
-        hashed_password=hashed_password,
+def create_game(db: Session, data: GameCreate) -> Game:
+    game = Game(
+        title=data.title,
+        genre=data.genre,
+        platform=data.platform,
+        release_year=data.release_year,
+        cover_url=data.cover_url,
     )
-    db.add(user)
+    db.add(game)
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(game)
+    return game
 
 
-def get_user(db: Session, user_id: str) -> User | None:
-    return db.query(User).filter(User.id == user_id).first()
+def get_game(db: Session, game_id: str) -> Game | None:
+    return db.query(Game).filter(Game.id == game_id).first()
 
 
-def list_users(db: Session, limit: int = 20, offset: int = 0) -> tuple[list[User], int]:
-    total = db.query(User).count()
-    users = db.query(User).offset(offset).limit(limit).all()
-    return users, total
+def list_games(db: Session, limit: int = 20, offset: int = 0):
+    total = db.query(Game).count()
+    items = db.query(Game).offset(offset).limit(limit).all()
+    return items, total
+
+
+def search_games(db: Session, q: str, limit: int = 20, offset: int = 0):
+    pattern = f"%{q}%"
+    query = db.query(Game).filter(Game.title.ilike(pattern))
+    total = query.count()
+    items = query.offset(offset).limit(limit).all()
+    return items, total

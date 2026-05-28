@@ -1,15 +1,16 @@
-from sqlalchemy import Column, String, Boolean, DateTime
-from datetime import datetime, timezone
 import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Column, String, Integer, DateTime
 from app.database import Base
 
 
-class User(Base):
-    __tablename__ = "users"
+class Game(Base):
+    __tablename__ = "games"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    username = Column(String, unique=True, nullable=False)
-    email = Column(String, unique=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id           = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title        = Column(String, nullable=False)
+    genre        = Column(String, nullable=False)
+    platform     = Column(String, nullable=False)
+    release_year = Column(Integer, nullable=True)
+    cover_url    = Column(String, nullable=True)
+    created_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))

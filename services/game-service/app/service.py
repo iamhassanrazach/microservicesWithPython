@@ -1,30 +1,34 @@
 from sqlalchemy.orm import Session
 from app import repository
-from app.schemas import UserCreate, UserOut, UserList
+from app.schemas import GameCreate, GameOut, GameList
 
 
-def _hash_password(plain: str) -> str:
-    # placeholder — swap for passlib in Module 6
-    return plain + "_hashed"
+def add_game(db: Session, data: GameCreate) -> GameOut:
+    game = repository.create_game(db, data)
+    return GameOut.model_validate(game)
 
 
-def add_user(db: Session, data: UserCreate) -> UserOut:
-    hashed = _hash_password(data.password)
-    user = repository.create_user(db, data, hashed)
-    return UserOut.model_validate(user)
+def fetch_game(db: Session, game_id: str) -> GameOut:
+    game = repository.get_game(db, game_id)
+    if not game:
+        raise ValueError(f"Game not found: {game_id}")
+    return GameOut.model_validate(game)
 
 
-def fetch_user(db: Session, user_id: str) -> UserOut:
-    user = repository.get_user(db, user_id)
-    if user is None:
-        raise ValueError(f"User {user_id} not found")
-    return UserOut.model_validate(user)
+def fetch_all_games(db: Session, limit: int = 20, offset: int = 0) -> GameList:
+    items, total = repository.list_games(db, limit=limit, offset=offset)
+    return GameList(
+        items=[GameOut.model_validate(g) for g in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
-def fetch_all_users(db: Session, limit: int = 20, offset: int = 0) -> UserList:
-    users, total = repository.list_users(db, limit=limit, offset=offset)
-    return UserList(
-        items=[UserOut.model_validate(u) for u in users],
+def find_games(db: Session, q: str, limit: int = 20, offset: int = 0) -> GameList:
+    items, total = repository.search_games(db, q, limit=limit, offset=offset)
+    return GameList(
+        items=[GameOut.model_validate(g) for g in items],
         total=total,
         limit=limit,
         offset=offset,
