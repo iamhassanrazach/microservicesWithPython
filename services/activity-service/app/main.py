@@ -1,89 +1,119 @@
-import httpx
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-from app.database import Base, engine, get_db
-from app.schemas import ActivityCreate, ActivityOut, ActivityList, GameSummary
-from app import repository
+"""
+activity-service — Module 4
+============================
+Adds asynchronous messaging to the module-03 service.
 
-Base.metadata.create_all(bind=engine)
+When an activity is created:
+  1. Validate the user exists in user-service  (critical — fail if not found)
+  2. Save the activity locally
+  3. Publish to RabbitMQ:
+       - gamehub.notifications  →  consumed by notification-service
+       - gamehub.logs           →  consumed by a future logging-service
+  4. Enrich the response with game data from game-service  (optional — null on failure)
+
+The RabbitMQ publish (step 3) is fire-and-forget: if the broker is down,
+the activity is still saved and the endpoint returns 201 normally.
+"""
+
+import httpx
+from fastapi import FastAPI, HTTPException
+
+from app.config import settings
+from app.infrastructure.rabbitmq_publisher import publish_message
+from app.models import (
+    ActivityCreate,
+    ActivityResponse,
+    GameInfo,
+    VALID_ACTIONS,
+    list_activities,
+    list_activities_by_user,
+    save_activity,
+)
 
 app = FastAPI(title="activity-service", version="1.0.0")
 
-USER_SERVICE_URL = "http://localhost:8001"
-GAME_SERVICE_URL = "http://localhost:8002"
 
-
-async def validate_user(user_id: str) -> None:
-    url = f"{USER_SERVICE_URL}/v1/users/{user_id}"
-    for attempt in range(1, 4):
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(url)
-            if resp.status_code == 404:
-                raise HTTPException(status_code=404, detail="User not found")
-            if resp.status_code == 200:
-                return
-            if attempt == 3:
-                raise HTTPException(status_code=502, detail="user-service error")
-        except HTTPException:
-            raise
-        except httpx.RequestError:
-            if attempt == 3:
-                raise HTTPException(status_code=503, detail="user-service unavailable")
-
-
-async def fetch_game_data(game_id: str) -> GameSummary | None:
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{GAME_SERVICE_URL}/v1/games/{game_id}")
-        if resp.status_code == 200:
-            data = resp.json()
-            return GameSummary(
-                id=data["id"],
-                title=data["title"],
-                genre=data["genre"],
-                platform=data["platform"],
-                cover_url=data.get("cover_url"),
-            )
-        return None
-    except httpx.RequestError:
-        return None
-
-
-@app.post("/v1/activities", response_model=ActivityOut, status_code=201)
-async def create_activity(data: ActivityCreate, db: Session = Depends(get_db)):
-    await validate_user(data.user_id)
-    activity = repository.create_activity(db, data)
-    game = await fetch_game_data(data.game_id)
-    out = ActivityOut.model_validate(activity)
-    out.game = game
-    return out
-
-
-@app.get("/v1/activities", response_model=ActivityList)
-async def list_activities(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
-    items, total = repository.list_activities(db, limit=limit, offset=offset)
-    enriched = []
-    for activity in items:
-        game = await fetch_game_data(activity.game_id)
-        out = ActivityOut.model_validate(activity)
-        out.game = game
-        enriched.append(out)
-    return ActivityList(items=enriched, total=total, limit=limit, offset=offset)
-
-
-@app.get("/v1/activities/user/{user_id}", response_model=ActivityList)
-async def list_user_activities(user_id: str, limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
-    items, total = repository.list_activities_by_user(db, user_id, limit=limit, offset=offset)
-    enriched = []
-    for activity in items:
-        game = await fetch_game_data(activity.game_id)
-        out = ActivityOut.model_validate(activity)
-        out.game = game
-        enriched.append(out)
-    return ActivityList(items=enriched, total=total, limit=limit, offset=offset)
-
+# ── Health ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health():
+async def health():
     return {"status": "ok", "service": "activity-service"}
+
+
+# ── Create activity ───────────────────────────────────────────────────────
+
+@app.post("/v1/activities", status_code=201, response_model=ActivityResponse)
+async def create_activity(payload: ActivityCreate):
+    # Validate action value
+    if payload.action not in VALID_ACTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid action '{payload.action}'. Valid: {sorted(VALID_ACTIONS)}",
+        )
+
+    # ── Step 1: validate user (critical) ──────────────────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            user_resp = await client.get(
+                f"{settings.user_service_url}/v1/users/{payload.user_id}"
+            )
+        if user_resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="User not found")
+        user_resp.raise_for_status()
+        user_data = user_resp.json()
+        username = user_data.get("username", "unknown")
+    except HTTPException:
+        raise
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"user-service unreachable: {exc}")
+
+    # ── Step 2: save the activity ─────────────────────────────────────────
+    activity = save_activity(payload)
+
+    # ── Step 3: publish to RabbitMQ (fire-and-forget) ────────────────────
+    #
+    # notification-service consumer (consumer.ts) expects:
+    #   { user_id: string, message: string }
+    #
+    # gamehub.logs receives a richer event for observability.
+    #
+    publish_message("gamehub.notifications", {
+        "user_id": payload.user_id,
+        "message": f"{username} just {payload.action} game {payload.game_id}",
+    })
+
+    publish_message("gamehub.logs", {
+        "event": "activity_created",
+        "activity_id": activity["id"],
+        "user_id": payload.user_id,
+        "game_id": payload.game_id,
+        "action": payload.action,
+    })
+
+    # ── Step 4: enrich with game data (optional) ──────────────────────────
+    game_info: GameInfo | None = None
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            game_resp = await client.get(
+                f"{settings.game_service_url}/v1/games/{payload.game_id}"
+            )
+        if game_resp.status_code == 200:
+            game_info = GameInfo(**game_resp.json())
+    except Exception:
+        pass  # enrichment failure is non-fatal
+
+    return ActivityResponse(**activity, game=game_info)
+
+
+# ── List activities ───────────────────────────────────────────────────────
+
+@app.get("/v1/activities", response_model=dict)
+async def get_activities(limit: int = 20, offset: int = 0):
+    items = list_activities(limit=limit, offset=offset)
+    return {"items": items, "total": len(items), "limit": limit, "offset": offset}
+
+
+@app.get("/v1/activities/user/{user_id}", response_model=dict)
+async def get_activities_by_user(user_id: str, limit: int = 20, offset: int = 0):
+    items = list_activities_by_user(user_id=user_id, limit=limit, offset=offset)
+    return {"items": items, "total": len(items), "limit": limit, "offset": offset}
