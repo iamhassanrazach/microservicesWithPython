@@ -7,3 +7,4 @@ pydantic-settings
 python-dotenv
 aiosqlite
 redis
+python-jose[cryptography]

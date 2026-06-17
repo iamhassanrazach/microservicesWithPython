@@ -1,5 +1,6 @@
 import httpx
 from fastapi import FastAPI, Request, Response
+from jose import JWTError, jwt
 
 from app.config import settings
 
@@ -14,7 +15,13 @@ ROUTES: dict[str, str] = {
     # Added in Module 5
     "consent":       settings.logging_service_url,
     "logs":          settings.logging_service_url,
+    # Added in Module 6
+    "auth":          settings.auth_service_url,
 }
+
+# Module 6 — paths that bypass JWT validation. You can't require a token to
+# get a token in the first place.
+PUBLIC_PATHS = {"/v1/auth/token"}
 
 
 @app.get("/health")
@@ -24,6 +31,20 @@ async def health():
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(request: Request, path: str):
+    full_path = f"/{path}"
+
+    # Step 0 — JWT validation (Module 6), skipped for public paths
+    if full_path not in PUBLIC_PATHS:
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not auth_header.lower().startswith("bearer "):
+            return Response(status_code=401, content="Missing or invalid Authorization header")
+
+        token = auth_header.split(" ", 1)[1]
+        try:
+            jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        except JWTError:
+            return Response(status_code=401, content="Invalid or expired token")
+
     # Step 1 — parse the resource name from the path
     segments = path.split("/")
     if len(segments) < 2:
@@ -43,7 +64,7 @@ async def proxy(request: Request, path: str):
     # unchanged, a service's own redirect (e.g. FastAPI's trailing-slash
     # redirect) would build its Location header using that wrong host and
     # point back at the gateway itself — httpx would then treat that as a
-    # cross-origin hop and silently drop headers on the follow-up request.
+    # cross-origin hop and silently drop the Authorization header.
     target_url = f"{target_base}/{path}"
     forward_headers = [
         (k, v) for k, v in request.headers.raw if k.lower() != b"host"

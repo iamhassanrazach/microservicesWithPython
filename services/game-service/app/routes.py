@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import service, schemas
 from app.infrastructure.cache import get_game_summary
+from app.security import require_admin
 
 router = APIRouter(prefix="/v1/games", tags=["games"])
 
@@ -38,3 +39,13 @@ def get_game_summary_route(game_id: str):
     if summary is None:
         raise HTTPException(status_code=404, detail="No cached summary for this game")
     return summary
+
+
+# Module 6 — only an admin token may delete a game. require_admin returns 401
+# if the token itself is missing/invalid, 403 if it's valid but role != admin.
+@router.delete("/{game_id}", status_code=204, dependencies=[Depends(require_admin)])
+def delete_game(game_id: str, db: Session = Depends(get_db)):
+    try:
+        service.delete_game(db, game_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

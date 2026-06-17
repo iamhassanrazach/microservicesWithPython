@@ -33,3 +33,12 @@ def search_games(db: Session, q: str, limit: int = 20, offset: int = 0):
     total = query.count()
     items = query.offset(offset).limit(limit).all()
     return items, total
+
+
+def delete_game(db: Session, game_id: str) -> bool:
+    game = get_game(db, game_id)
+    if not game:
+        return False
+    db.delete(game)
+    db.commit()
+    return True
