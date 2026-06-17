@@ -1,11 +1,24 @@
 from sqlalchemy.orm import Session
 from app import repository
 from app.schemas import GameCreate, GameOut, GameList
+from app.infrastructure.cache import set_game_summary
 
 
 def add_game(db: Session, data: GameCreate) -> GameOut:
     game = repository.create_game(db, data)
-    return GameOut.model_validate(game)
+    out = GameOut.model_validate(game)
+
+    # Module 5 — write-through to the Redis read model right after the
+    # authoritative SQLite write. The /summary endpoint reads from here.
+    set_game_summary(out.id, {
+        "id": out.id,
+        "title": out.title,
+        "genre": out.genre,
+        "platform": out.platform,
+        "cover_url": out.cover_url,
+    })
+
+    return out
 
 
 def fetch_game(db: Session, game_id: str) -> GameOut:

@@ -11,6 +11,9 @@ ROUTES: dict[str, str] = {
     "activities":    settings.activity_service_url,
     # Added in Module 4
     "notifications": settings.notification_service_url,
+    # Added in Module 5
+    "consent":       settings.logging_service_url,
+    "logs":          settings.logging_service_url,
 }
 
 
@@ -34,13 +37,23 @@ async def proxy(request: Request, path: str):
         return Response(status_code=404, content=f"Unknown resource: {resource}")
 
     # Step 3 — forward the request
+    #
+    # We drop the original Host header: it says "gateway:8000", but we're
+    # calling a different service on a different port. If we forwarded it
+    # unchanged, a service's own redirect (e.g. FastAPI's trailing-slash
+    # redirect) would build its Location header using that wrong host and
+    # point back at the gateway itself — httpx would then treat that as a
+    # cross-origin hop and silently drop headers on the follow-up request.
     target_url = f"{target_base}/{path}"
+    forward_headers = [
+        (k, v) for k, v in request.headers.raw if k.lower() != b"host"
+    ]
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.request(
                 method=request.method,
                 url=target_url,
-                headers=request.headers.raw,
+                headers=forward_headers,
                 content=await request.body(),
                 params=request.query_params,
             )

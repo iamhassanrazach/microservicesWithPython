@@ -13,12 +13,17 @@ When an activity is created:
 
 The RabbitMQ publish (step 3) is fire-and-forget: if the broker is down,
 the activity is still saved and the endpoint returns 201 normally.
+
+Module 6 — the call to user-service in step 1 is now an M2M (service-to-
+service) call: activity-service authenticates as itself (role="service")
+via get_auth_headers(), so the request carries a valid Bearer token.
 """
 
 import httpx
 from fastapi import FastAPI, HTTPException
 
 from app.config import settings
+from app.infrastructure.auth_client import get_auth_headers
 from app.infrastructure.rabbitmq_publisher import publish_message
 from app.models import (
     ActivityCreate,
@@ -53,9 +58,11 @@ async def create_activity(payload: ActivityCreate):
 
     # ── Step 1: validate user (critical) ──────────────────────────────────
     try:
+        m2m_headers = await get_auth_headers()
         async with httpx.AsyncClient(timeout=5.0) as client:
             user_resp = await client.get(
-                f"{settings.user_service_url}/v1/users/{payload.user_id}"
+                f"{settings.user_service_url}/v1/users/{payload.user_id}",
+                headers=m2m_headers,
             )
         if user_resp.status_code == 404:
             raise HTTPException(status_code=404, detail="User not found")

@@ -1,0 +1,4 @@
+flask
+flask-sqlalchemy
+pika
+python-dotenv

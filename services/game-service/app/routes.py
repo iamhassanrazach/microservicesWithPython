@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import service, schemas
+from app.infrastructure.cache import get_game_summary
 
 router = APIRouter(prefix="/v1/games", tags=["games"])
 
@@ -27,3 +28,13 @@ def get_game(game_id: str, db: Session = Depends(get_db)):
         return service.fetch_game(db, game_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# Module 5 — CQRS read endpoint. Reads from the Redis projection instead of
+# SQLite, so it can be fast and stale rather than slow and accurate.
+@router.get("/{game_id}/summary")
+def get_game_summary_route(game_id: str):
+    summary = get_game_summary(game_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No cached summary for this game")
+    return summary
